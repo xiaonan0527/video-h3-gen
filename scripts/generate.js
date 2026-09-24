@@ -152,7 +152,14 @@ function downloadFile(url, dest, apiKey) {
 
     const doDownload = (targetUrl) => {
       const curMod = targetUrl.startsWith('https') ? https : http;
-      curMod.get(targetUrl, { headers }, (res) => {
+      const curUrlObj = new URL(targetUrl);
+      const curHeaders = {};
+      const baseHost = new URL(BASE_URL).hostname;
+      if ((curUrlObj.hostname === baseHost || curUrlObj.hostname.includes('nange-ai.com')) && apiKey) {
+        curHeaders['Authorization'] = `Bearer ${apiKey}`;
+      }
+
+      curMod.get(targetUrl, { headers: curHeaders }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           return doDownload(res.headers.location);
         }
@@ -272,11 +279,13 @@ async function pollTask(apiKey, taskID, pollIntervalMs = 5000) {
 /**
  * 独家 Context-IR 提示词优化工作流
  */
-async function optimizePromptWithContextIR(apiKey, rawPrompt) {
+async function optimizePromptWithContextIR(apiKey, rawPrompt, duration, aspectRatio) {
   process.stderr.write(`\n>>> [Context-IR] 正在智能扩展分镜与运镜提示词...\n`);
   const body = {
     model: MODEL_H3_CONTEXT_IR,
     prompt: rawPrompt,
+    duration: duration > 0 ? duration : 5,
+    aspect_ratio: aspectRatio || '16:9',
   };
   const taskID = await submitTask(apiKey, body);
   process.stderr.write(`[Context-IR] 任务已提交: ${taskID}，等待优化结果...\n`);
@@ -302,6 +311,7 @@ function parseArgs() {
     lastFrame: '',
     images: [],
     refVideos: [],
+    refAudios: [],
     sourceTaskId: '',
     watermark: undefined,
     enhancePrompt: false,
@@ -321,7 +331,10 @@ function parseArgs() {
       case '--last-frame': parsed.lastFrame = args[++i]; break;
       case '--image':
       case '--image-url': parsed.images.push(args[++i]); break;
-      case '--ref-video': parsed.refVideos.push(args[++i]); break;
+      case '--ref-video':
+      case '--video-url': parsed.refVideos.push(args[++i]); break;
+      case '--ref-audio':
+      case '--audio-url': parsed.refAudios.push(args[++i]); break;
       case '--source-task-id': parsed.sourceTaskId = args[++i]; break;
       case '--watermark': parsed.watermark = args[++i] === 'true'; break;
       case '--enhance-prompt': parsed.enhancePrompt = true; break;
@@ -364,15 +377,16 @@ MiniMax H3 视频生成与运镜优化工具
   node generate.js --task-id "vid_task_xxx" --out ./my_video.mp4
 
 选项列表:
-  --prompt <text>          视频场景描述或待优化的提示词
+  --prompt <text>          视频场景描述或待优化的提示词 (最长 7000 字符)
   --model <name>           模型名称: MiniMax-H3 (默认) | MiniMax-H3-Max | MiniMax-H3-Regeneration | MiniMax-H3-Context-IR
   --resolution <res>       视频分辨率: 2k (默认) | 768p | 1080p | 480p (视模型支持而定)
-  --duration <sec>         生成时长: 6s (默认) | 10s (支持 4-15s, H3-Max 不支持 4s)
+  --duration <sec>         生成时长: 6s (默认) (H3 支持 4-15s, H3-Max 支持 5-15s 不支持 4s)
   --aspect-ratio <ratio>   画幅比例: 16:9 (默认) | 9:16 | 1:1 | 4:3 | 3:4 | 21:9
   --first-frame <path/url> 首帧图（支持本地图片路径或 HTTP URL）
   --last-frame <path/url>  尾帧图（支持本地图片路径或 HTTP URL）
-  --image <path/url>       多图参考（可多次传递此选项，最多支持 10 张）
-  --ref-video <url>        参考视频 URL（H3-Max 支持）
+  --image <path/url>       多图参考（可多次传递此选项，最多支持 9 张）
+  --ref-video <url>        参考视频 URL（最多 3 段，每段 2-15s）
+  --ref-audio <url>        参考音频 URL（最多 3 段，不能单独使用）
   --source-task-id <id>    溯源任务 ID（MiniMax-H3-Regeneration 必传）
   --watermark <bool>       是否携带水印 (默认 true, 1080P 下不支持加水印)
   --enhance-prompt         智能联动: 先调用 Context-IR 扩写分镜与运镜，再生成视频
@@ -449,7 +463,7 @@ async function main() {
   // 3. 执行 Context-IR 优化联动（如果启用）
   let finalPrompt = opts.prompt;
   if (opts.enhancePrompt && targetModel !== MODEL_H3_CONTEXT_IR) {
-    finalPrompt = await optimizePromptWithContextIR(apiKey, opts.prompt);
+    finalPrompt = await optimizePromptWithContextIR(apiKey, opts.prompt, opts.duration, opts.aspectRatio);
   }
 
   // 4. 构建提交请求体
@@ -463,6 +477,16 @@ async function main() {
 
   // 针对 Context-IR 模型的特化执行
   if (targetModel === MODEL_H3_CONTEXT_IR) {
+    requestBody.aspect_ratio = opts.aspectRatio || '16:9';
+    requestBody.duration = opts.duration > 0 ? opts.duration : 5;
+    if (opts.firstFrame) requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
+    if (opts.lastFrame) requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
+    if (opts.images && opts.images.length > 0) {
+      requestBody.image_urls = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
+    }
+    if (opts.refVideos && opts.refVideos.length > 0) requestBody.video_urls = opts.refVideos;
+    if (opts.refAudios && opts.refAudios.length > 0) requestBody.audio_urls = opts.refAudios;
+
     process.stderr.write(`正在提交 Context-IR 运镜提示词优化任务...\n`);
     const taskID = await submitTask(apiKey, requestBody);
     process.stderr.write(`任务已提交: ${taskID}，正在等待结果...\n`);
@@ -484,7 +508,8 @@ async function main() {
       process.exit(1);
     }
     requestBody.source_task_id = opts.sourceTaskId;
-    requestBody.resolution = '2K';
+    // 官方规范：Regeneration 只需要 source_task_id，平台自动回填 prompt、素材、画幅和时长
+    delete requestBody.prompt;
   } else {
     // 分辨率推导
     if (opts.resolution) {
@@ -496,31 +521,59 @@ async function main() {
     if (opts.aspectRatio) {
       requestBody.aspect_ratio = opts.aspectRatio;
     }
-  }
 
-  // 时长
-  if (opts.duration > 0) {
-    requestBody.duration = opts.duration;
-  } else {
-    requestBody.duration = 6;
-  }
+    // 时长推导
+    if (opts.duration > 0) {
+      requestBody.duration = opts.duration;
+    } else {
+      requestBody.duration = 6;
+    }
 
-  if (opts.watermark !== undefined) {
-    requestBody.watermark = opts.watermark;
-  }
+    // 校验各模型限制
+    if (targetModel === MODEL_H3_MAX) {
+      if (requestBody.duration === 4) {
+        console.error(`错误：${MODEL_H3_MAX} 不支持 4 秒时长，支持范围为 5-15 秒`);
+        process.exit(1);
+      }
+      if (requestBody.resolution === '2K') {
+        console.error(`错误：${MODEL_H3_MAX} 不支持 2K 分辨率，支持: 480P, 768P, 1080P`);
+        process.exit(1);
+      }
+      if (requestBody.resolution === '1080P') {
+        if (opts.watermark === true) {
+          console.error(`错误：${MODEL_H3_MAX} 在 1080P 分辨率下不支持加水印`);
+          process.exit(1);
+        }
+        // 1080P 下完全不传递 watermark 字段，避免上游报 400
+      } else if (opts.watermark !== undefined) {
+        requestBody.watermark = opts.watermark;
+      }
+    } else if (targetModel === MODEL_H3) {
+      if (requestBody.resolution !== '2K' && requestBody.resolution !== '768P') {
+        console.error(`错误：${MODEL_H3} 仅支持 2K 或 768P 分辨率`);
+        process.exit(1);
+      }
+      if (opts.watermark !== undefined) {
+        requestBody.watermark = opts.watermark;
+      }
+    }
 
-  // 挂载参考素材
-  if (opts.firstFrame) {
-    requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
-  }
-  if (opts.lastFrame) {
-    requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
-  }
-  if (opts.images && opts.images.length > 0) {
-    requestBody.images = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
-  }
-  if (opts.refVideos && opts.refVideos.length > 0) {
-    requestBody.reference_videos = opts.refVideos;
+    // 挂载参考素材（使用 APIMart 官方规范字段名）
+    if (opts.firstFrame) {
+      requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
+    }
+    if (opts.lastFrame) {
+      requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
+    }
+    if (opts.images && opts.images.length > 0) {
+      requestBody.image_urls = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
+    }
+    if (opts.refVideos && opts.refVideos.length > 0) {
+      requestBody.video_urls = opts.refVideos;
+    }
+    if (opts.refAudios && opts.refAudios.length > 0) {
+      requestBody.audio_urls = opts.refAudios;
+    }
   }
 
   // 5. 提交视频生成任务
@@ -532,7 +585,9 @@ async function main() {
   if (requestBody.source_task_id) process.stderr.write(`  原任务溯源: ${requestBody.source_task_id}\n`);
   if (requestBody.first_frame_image) process.stderr.write(`  首帧图: [已加载]\n`);
   if (requestBody.last_frame_image) process.stderr.write(`  尾帧图: [已加载]\n`);
-  if (requestBody.images) process.stderr.write(`  参考图片数: ${requestBody.images.length}\n`);
+  if (requestBody.image_urls) process.stderr.write(`  参考图片数: ${requestBody.image_urls.length}\n`);
+  if (requestBody.video_urls) process.stderr.write(`  参考视频数: ${requestBody.video_urls.length}\n`);
+  if (requestBody.audio_urls) process.stderr.write(`  参考音频数: ${requestBody.audio_urls.length}\n`);
 
   const taskID = await submitTask(apiKey, requestBody);
   process.stderr.write(`任务已提交成功！Task ID: ${taskID}\n`);
