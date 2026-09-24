@@ -171,6 +171,45 @@ function downloadFile(url, dest, apiKey) {
   });
 }
 
+function extractTaskIdFromResult(result) {
+  if (!result) return '';
+  if (typeof result.task_id === 'string' && result.task_id) return result.task_id;
+  if (typeof result.id === 'string' && result.id) return result.id;
+  if (Array.isArray(result.data) && result.data.length > 0) {
+    const first = result.data[0];
+    if (first && typeof first === 'object') {
+      if (typeof first.task_id === 'string' && first.task_id) return first.task_id;
+      if (typeof first.id === 'string' && first.id) return first.id;
+    } else if (typeof first === 'string' && first) {
+      return first;
+    }
+  }
+  if (result.data && typeof result.data === 'object' && !Array.isArray(result.data)) {
+    if (typeof result.data.task_id === 'string' && result.data.task_id) return result.data.task_id;
+    if (typeof result.data.id === 'string' && result.data.id) return result.data.id;
+  }
+  return '';
+}
+
+function extractVideoUrlFromRes(res) {
+  if (!res) return '';
+  if (typeof res.video_url === 'string' && res.video_url) return res.video_url;
+  if (Array.isArray(res.videos) && res.videos.length > 0) {
+    const v = res.videos[0];
+    if (typeof v === 'string' && v) return v;
+    if (v && typeof v === 'object') {
+      if (Array.isArray(v.url) && v.url.length > 0 && typeof v.url[0] === 'string') {
+        return v.url[0];
+      }
+      if (typeof v.url === 'string' && v.url) {
+        return v.url;
+      }
+    }
+  }
+  if (typeof res.url === 'string' && res.url) return res.url;
+  return '';
+}
+
 async function submitTask(apiKey, bodyObj) {
   const payload = JSON.stringify(bodyObj);
   const result = await request(`${BASE_URL}/videos/generations`, {
@@ -181,7 +220,7 @@ async function submitTask(apiKey, bodyObj) {
     },
   }, payload);
 
-  const taskID = result.task_id || (result.data && result.data.task_id) || result.id || (result.data && result.data.id);
+  const taskID = extractTaskIdFromResult(result);
   if (!taskID) {
     throw new Error('未获取到 task_id，接口返回: ' + JSON.stringify(result).substring(0, 300));
   }
@@ -195,11 +234,11 @@ async function fetchTaskStatus(apiKey, taskID) {
     },
   });
 
-  const data = result.data || result;
+  const data = (Array.isArray(result.data) ? result.data[0] : result.data) || result;
   const status = (data.status || '').toLowerCase();
   const resObj = data.result || {};
   const progress = data.progress !== undefined ? data.progress : (status === 'success' || status === 'completed' ? 100 : 0);
-  const errMsg = (data.error && data.error.message) || data.message || '';
+  const errMsg = (data.error && data.error.message) || (result.error && result.error.message) || data.message || '';
 
   return { status, resObj, progress, errMsg, raw: data };
 }
@@ -362,9 +401,9 @@ async function main() {
       return;
     }
 
-    const videoUrl = res.video_url || (res.videos && res.videos[0] && (res.videos[0].url || res.videos[0]));
+    const videoUrl = extractVideoUrlFromRes(res);
     if (!videoUrl) {
-      throw new Error('任务返回结果中未包含有效视频链接');
+      throw new Error('任务返回结果中未包含有效视频链接: ' + JSON.stringify(res));
     }
 
     const outPath = path.resolve(opts.out || './output.mp4');
@@ -501,9 +540,9 @@ async function main() {
 
   // 6. 轮询结果
   const res = await pollTask(apiKey, taskID, opts.pollInterval);
-  const videoUrl = res.video_url || (res.videos && res.videos[0] && (res.videos[0].url || res.videos[0]));
+  const videoUrl = extractVideoUrlFromRes(res);
   if (!videoUrl) {
-    throw new Error('未在任务结果中找到有效的 video_url: ' + JSON.stringify(res));
+    throw new Error('未在任务结果中找到有效的视频链接: ' + JSON.stringify(res));
   }
 
   // 7. 下载视频
