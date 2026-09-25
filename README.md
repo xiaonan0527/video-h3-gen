@@ -71,10 +71,11 @@ node scripts/generate.js \
 ### 2. 首尾帧插值生视频
 
 ```bash
+# 传入可公开访问的 HTTPS 媒体直链（如生图任务生成的临时图片地址或图床链接）
 node scripts/generate.js \
   --prompt "A warrior drawing a sword smoothly, cinematic movement" \
-  --first-frame ./start.jpg \
-  --last-frame ./end.jpg \
+  --first-frame "https://your-domain.com/start.jpg" \
+  --last-frame "https://your-domain.com/end.jpg" \
   --duration 6 \
   --out ./warrior.mp4
 ```
@@ -126,16 +127,22 @@ node scripts/generate.js \
 | `--resolution`| `2k` (H3) / `768p` (Max) | 分辨率：`2k`, `768p`, `1080p`, `480p`（根据模型支持） |
 | `--duration` | `6` | 视频时长（秒），支持 4-15s（H3-Max 不支持 4s） |
 | `--aspect-ratio`| `16:9` | 画幅比例：`16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9` |
-| `--first-frame`| - | 首帧参考图（支持本地文件路径自动转换，或 HTTP 图片直链） |
-| `--last-frame` | - | 尾帧参考图（支持本地文件路径或 HTTP 直链） |
-| `--image` | - | 多图参考图片路径或 URL（可多次传递，最多 10 张） |
-| `--ref-video` | - | 参考视频 URL（`MiniMax-H3-Max` 支持） |
+| `--first-frame`| - | 首帧参考图（支持 `http://`、`https://`、`asset://`，本地图片尝试自动上传） |
+| `--last-frame` | - | 尾帧参考图（支持 `http://`、`https://`、`asset://`，本地图片尝试自动上传） |
+| `--image` | - | 多图参考图片 URL（可多次传递，最多 10 张） |
+| `--ref-video` | - | 参考视频 URL（`MiniMax-H3-Max` 支持，支持 http/https/asset） |
 | `--source-task-id`| - | 原任务 ID（`MiniMax-H3-Regeneration` 必传） |
 | `--watermark` | `true` | 是否携带水印（1080P 分辨率强制不支持加水印） |
 | `--enhance-prompt`| `false`| 开启后先调用 Context-IR 扩写分镜与运镜，再生成视频 |
 | `--task-id` | - | 已有任务 ID，跳过生成直接查询并下载 |
 | `--out` | `./output.mp4` | 输出文件路径 |
 | `--poll-interval`| `5` | 轮询状态间隔秒数 |
+
+### 素材格式与规范说明
+
+- **接口支持协议**：仅支持 `http://`、`https://` 或 `asset://` 格式的媒体链接，**严禁使用 Base64 Data URI**（上游与官方规范明确禁止）。
+- **本地图片自动上传**：传入本地图片路径时，脚本会尝试通过 APIMart 兼容的上传接口自动上传并换取公网 URL；若当前中转节点未开启上传服务，脚本将立刻给出清晰报错及解决方案。
+- **最佳实践**：在 Codex / Claude 等多模态工作流中，可直接将上一阶段（如 GPT-Image）生成的临时 HTTPS 链接传入 `--first-frame`、`--last-frame` 或 `--image`。
 
 ---
 

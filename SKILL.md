@@ -54,7 +54,17 @@ MiniMax H3 系列模型具备顶级的物理模拟与光影渲染力。为了得
   - `Volumetric lighting, golden hour rim light, neon street reflections`
   - `Anamorphic lens flare, 35mm film grain, 24fps motion blur`
 
-### 2. 首尾帧插值生视频规范
+### 2. 首尾帧与参考素材规范（重要）
+MiniMax 视频生成接口对素材链接有严格的格式要求：
+- **仅支持有效链接**：`http://`、`https://` 或 `asset://`。
+- **严禁 Base64**：官方接口明确不再接收 Base64 Data URI。
+- **本地图片处理策略**：
+  - 若传入本地图片路径，脚本会尝试调用 APIMart 兼容的上传接口自动上传换取公网 URL；
+  - 若上传服务未启用或不可用，脚本将**立即明确报错拦截**并给出指引，绝不转换成 Base64；
+  - **最佳实践**：在 Codex / Claude 生图联动工作流中，直接使用上一轮生图（如 GPT-Image）返回的临时公网 `https://` 地址传入 `--first-frame` / `--last-frame` / `--image`。
+- **参考视频与音频**：
+  - `--ref-video` 与 `--ref-audio` 仅接受公网可直接访问的 `http://`、`https://` 或 `asset://` 链接。
+
 若用户提供了**起始图**与**结束图**：
 - prompt 重点描述**“从起始状态到终点状态的变化过程与中间动作”**；
 - 避免在 prompt 里重复两张图片的静态细节，而是指示物理运动路径（例如“角色从站立缓慢转身面向大海，微风吹拂长发，镜头平滑推进”）。
@@ -87,11 +97,11 @@ node "$SKILL_DIR/scripts/generate.js" \
   --aspect-ratio 16:9 \
   --out "./cyberpunk.mp4"
 
-# 2. 首尾帧过渡图生视频
+# 2. 首尾帧过渡图生视频（支持公网 HTTPS 或 asset:// 链接，本地图片将尝试自动上传）
 node "$SKILL_DIR/scripts/generate.js" \
   --prompt "A warrior drawing a glowing sword, transition from resting to battle stance" \
-  --first-frame "./start.jpg" \
-  --last-frame "./end.jpg" \
+  --first-frame "https://your-domain.com/start.jpg" \
+  --last-frame "https://your-domain.com/end.jpg" \
   --duration 6 \
   --out "./sword.mp4"
 
