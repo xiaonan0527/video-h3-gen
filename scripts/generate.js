@@ -137,185 +137,55 @@ function isMediaUrl(val) {
 }
 
 /**
- * 纯原生 Node.js 实现 multipart/form-data 图片上传 (符合 APIMart 官方规范)
- * 官方端点规范：POST /v1/uploads/images，Header: Authorization: Bearer <key>，Body: file: <binary>
- */
-function uploadImageFileToEndpoint(filePath, apiKey, uploadUrl) {
-  return new Promise((resolve, reject) => {
-    try {
-      const boundary = '----NodeFormBoundary' + Math.random().toString(36).substring(2) + Date.now().toString(36);
-      const filename = path.basename(filePath);
-      const ext = path.extname(filePath).toLowerCase();
-      const mime = MIME_TYPES[ext] || 'image/png';
-      const fileData = fs.readFileSync(filePath);
-
-      const head = Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-        `Content-Type: ${mime}\r\n\r\n`
-      );
-      const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const payload = Buffer.concat([head, fileData, tail]);
-
-      const parsedUrl = new URL(uploadUrl);
-      const mod = parsedUrl.protocol === 'https:' ? https : http;
-      const req = mod.request(uploadUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': payload.length,
-          'User-Agent': 'video-h3-gen/1.0',
-        },
-      }, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode >= 400) {
-            let errMsg = `HTTP ${res.statusCode}: ${data}`;
-            try {
-              const errObj = JSON.parse(data);
-              if (errObj.error && errObj.error.message) errMsg = errObj.error.message;
-              else if (errObj.message) errMsg = errObj.message;
-            } catch (_) {}
-            reject(new Error(errMsg));
-          } else {
-            try {
-              const json = JSON.parse(data);
-              const targetUrl = json.url || (json.data && json.data.url);
-              if (targetUrl) {
-                resolve(targetUrl);
-              } else {
-                reject(new Error(`响应数据未包含 url: ${data.substring(0, 150)}`));
-              }
-            } catch (e) {
-              reject(new Error(`解析 JSON 失败: ${data.substring(0, 150)}`));
-            }
-          }
-        });
-      });
-
-      req.on('error', reject);
-      req.write(payload);
-      req.end();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-/**
- * 候选上传端点探索与尝试
- */
-async function tryUploadLocalImage(absPath, apiKey) {
-  const candidateEndpoints = [];
-
-  // 1. 用户自定义上传端点环境变量
-  if (process.env.NANGE_UPLOAD_URL) candidateEndpoints.push(process.env.NANGE_UPLOAD_URL.trim());
-  if (process.env.APIMART_UPLOAD_URL) candidateEndpoints.push(process.env.APIMART_UPLOAD_URL.trim());
-
-  // 2. 根据 BASE_URL 衍生可能的上传路径
-  try {
-    const baseObj = new URL(BASE_URL);
-    // 例如 https://api.nange-ai.com/video/v1/uploads/images
-    candidateEndpoints.push(`${BASE_URL.replace(/\/+$/, '')}/uploads/images`);
-    // 例如 https://api.nange-ai.com/v1/uploads/images
-    candidateEndpoints.push(`${baseObj.origin}/v1/uploads/images`);
-  } catch (_) {}
-
-  const endpoints = [...new Set(candidateEndpoints)];
-
-  let lastError = null;
-  for (const endpoint of endpoints) {
-    try {
-      const url = await uploadImageFileToEndpoint(absPath, apiKey, endpoint);
-      if (url && isMediaUrl(url)) {
-        return { success: true, url, endpoint };
-      }
-    } catch (err) {
-      lastError = err;
-    }
-  }
-
-  return { success: false, error: lastError };
-}
-
-/**
- * 解析并规范化媒体入参
- * 严格遵照 APIMart 与 MiniMax 官方规范：
- * 1. 仅接收 http://, https://, asset://
+ * 解析并校验媒体参数 (仅支持 http://, https://, asset://)
+ * 严格遵照平台接口规范：
+ * 1. 仅接收 http://, https://, asset:// 协议的公网链接
  * 2. 严禁使用 Base64 Data URI
- * 3. 本地图片尝试自动上传为公网 URL；若服务节点不可用，给出清晰引导和明确拦截，绝不 fallback 到 Base64
+ * 3. 不接收本地文件路径（安全防错拦截，并对个人隐私图片提出严禁上传公开图床的警示）
  */
-async function resolveMediaArg(arg, label, apiKey) {
+function resolveMediaArg(arg, label) {
   if (!arg) return null;
   const trimmed = arg.trim();
 
-  // 拦截非法的 Base64 Data URI
+  // 1. 严格拦截 Base64 Data URI
   if (trimmed.startsWith('data:')) {
     console.error(`\n======================================================`);
     console.error(`[参数错误] ${label || '素材'}不能使用 Base64 Data URI！`);
     console.error(`======================================================`);
-    console.error(`MiniMax-H3 / APIMart 视频 API 规范明确禁止在生成请求中传入 Base64 数据。`);
-    console.error(`媒体参数必须是可直接访问的链接 (http://, https:// 或 asset://)。`);
-    console.error(`建议：请使用公网图片链接（如生图任务生成的临时 https:// 地址，或图床链接）。\n`);
+    console.error(`MiniMax 视频生成接口不支持在请求中直接传入 Base64 媒体数据。`);
+    console.error(`媒体参数必须是可直接访问的公开链接 (http://, https:// 或 asset://)。\n`);
     process.exit(1);
   }
 
-  // 若已是合法的公网 URL 或 asset:// 链接，直接返回
+  // 2. 合法媒体链接直接通过
   if (isMediaUrl(trimmed)) {
     return trimmed;
   }
 
-  // 检测本地文件路径
-  const absPath = path.resolve(trimmed);
-  if (!fs.existsSync(absPath)) {
-    console.error(`\n======================================================`);
-    console.error(`[参数错误] ${label || '素材'}不存在且非有效链接: ${trimmed}`);
-    console.error(`======================================================`);
-    console.error(`MiniMax 视频生成接口仅支持：`);
-    console.error(`  1. 公网可访问的 HTTP/HTTPS 链接 (http:// 或 https://)`);
-    console.error(`  2. 内部资产链接 (asset://)`);
-    console.error(`  3. 本地图片文件（将由脚本尝试自动上传换取 URL）\n`);
-    process.exit(1);
-  }
-
-  const ext = path.extname(absPath).toLowerCase();
-  const isImage = Boolean(MIME_TYPES[ext]);
-
-  if (isImage) {
-    process.stderr.write(`[素材处理] 检测到本地图片: ${path.basename(absPath)}，正在尝试自动上传换取公网 URL...\n`);
-    const uploadRes = await tryUploadLocalImage(absPath, apiKey);
-    if (uploadRes.success) {
-      process.stderr.write(`[素材处理] 图片上传成功 -> ${uploadRes.url}\n`);
-      return uploadRes.url;
-    }
-
-    // 上传失败：严禁使用 Base64 乱搞，Fail-Fast 退出并给出解决方案
-    const errReason = uploadRes.error ? uploadRes.error.message : '所有候选上传端点均不可用';
-    console.error(`\n================================================================================`);
-    console.error(`[错误] 本地图片无法直接用于视频生成: ${trimmed}`);
-    console.error(`================================================================================`);
-    console.error(`原因分析：`);
-    console.error(`1. MiniMax 视频生成接口严格只接收 http://, https://, asset:// 链接，不支持直接传入本地文件。`);
-    console.error(`2. 官方接口规范明确声明：为了更好的性能和成本控制，不再支持在生成接口中直接传入 Base64 数据。`);
-    console.error(`3. 脚本尝试自动上传该图片换取公网 URL，但上传未成功 (${errReason})。`);
-    console.error(``);
-    console.error(`推荐解决方案：`);
-    console.error(`• 方式 1 [工作流联动]：若素材来自上一阶段生图（如 GPT-Image），直接将返回的公网 https:// 临时链接传入本脚本。`);
-    console.error(`• 方式 2 [图床/存储]：将本地图片上传至对象存储 (OSS/COS/S3/GitHub 图床等)，传入可公开访问的 https:// 链接。`);
-    console.error(`• 方式 3 [指定端点]：若拥有可用的 APIMart 兼容上传端点，可通过设置环境变量指定：`);
-    console.error(`    export NANGE_UPLOAD_URL="https://your-api.com/v1/uploads/images"`);
-    console.error(`================================================================================\n`);
-    process.exit(1);
-  }
-
-  // 本地视频/音频
+  // 3. 传入了本地文件路径或非 URL 字符串，进行明确拦截与隐私安全指引
   console.error(`\n================================================================================`);
-  console.error(`[错误] 参考${label || '媒体'}不支持本地文件路径: ${trimmed}`);
+  console.error(`[参数错误] ${label || '素材'}必须提供公网可访问的 URL 链接: ${trimmed}`);
   console.error(`================================================================================`);
-  console.error(`MiniMax 视频与音频参考素材目前仅支持公网 http://, https:// 或 asset:// 链接。`);
-  console.error(`请将本地视频/音频文件上传至公网对象存储或网盘直链后，使用 URL 格式传入本参数。`);
+  console.error(`接口协议说明：`);
+  console.error(`  MiniMax 视频生成接口仅支持以 http://, https:// 或 asset:// 开头的链接，`);
+  console.error(`  不支持直接传递本地文件路径，亦不支持 Base64 数据。`);
+  console.error(``);
+  console.error(`⚠️【重要隐私安全警告】：`);
+  console.error(`  如果您的照片/素材包含个人人脸自拍、家庭生活照、身份证件或商业机密等私密信息，`);
+  console.error(`  【严禁上传到第三方公开公网图床】！公开图床文件会被搜索引擎抓取与公开索引，`);
+  console.error(`  极易造成个人肖像侵权与隐私泄漏。`);
+  console.error(``);
+  console.error(`推荐安全合规使用方案：`);
+  console.error(`• 方案 1 [零隐私风险·AI 对话联动]（强烈推荐）：`);
+  console.error(`    在与 AI 助手的对话流程中，若需要图生视频，可直接调用生图技能（如 GPT-Image`);
+  console.error(`    或平台生图接口），直接使用模型返回的临时公网 https:// 链接传入本工具，`);
+  console.error(`    完全不触碰本地文件与公开图床，安全且无隐私泄露风险。`);
+  console.error(`• 方案 2 [国内可控对象存储]（企业/私有素材推荐）：`);
+  console.error(`    若确需使用本地图片，推荐上传至您自己账号下的国内云厂商存储（如阿里云 OSS、`);
+  console.error(`    腾讯云 COS、七牛云等），配置临时安全只读链接传入。`);
+  console.error(`• 方案 3 [国内合规公共图床]（仅限完全不涉隐私的公开素材）：`);
+  console.error(`    若素材仅为公开的风景摄影、通用插画等【完全不包含任何隐私】的内容，方可`);
+  console.error(`    使用国内合规图床获取直链（请再次确认：涉密与人脸肖像照片严禁使用！）。`);
   console.error(`================================================================================\n`);
   process.exit(1);
 }
@@ -561,9 +431,9 @@ MiniMax H3 视频生成与运镜优化工具
   --resolution <res>       视频分辨率: 2k (默认) | 768p | 1080p | 480p (视模型支持而定)
   --duration <sec>         生成时长: 6s (默认) (H3 支持 4-15s, H3-Max 支持 5-15s 不支持 4s)
   --aspect-ratio <ratio>   画幅比例: 16:9 (默认) | 9:16 | 1:1 | 4:3 | 3:4 | 21:9
-  --first-frame <url/path> 首帧图 (支持 http/https/asset 链接，本地图片自动尝试上传)
-  --last-frame <url/path>  尾帧图 (支持 http/https/asset 链接，本地图片自动尝试上传)
-  --image <url/path>       多图参考 (支持 http/https/asset 链接，本地图片自动尝试上传，最多 9 张)
+  --first-frame <url>      首帧参考图 (支持 http/https/asset 链接，隐私照片严禁上传公网图床)
+  --last-frame <url>       尾帧参考图 (支持 http/https/asset 链接，隐私照片严禁上传公网图床)
+  --image <url>            多图参考图 URL (支持 http/https/asset 链接，可多次传递，最多 9 张)
   --ref-video <url>        参考视频 URL (支持 http/https/asset 链接，最多 3 段)
   --ref-audio <url>        参考音频 URL (支持 http/https/asset 链接，最多 3 段)
   --source-task-id <id>    溯源任务 ID (MiniMax-H3-Regeneration 必传)
@@ -658,16 +528,16 @@ async function main() {
   if (targetModel === MODEL_H3_CONTEXT_IR) {
     requestBody.aspect_ratio = opts.aspectRatio || '16:9';
     requestBody.duration = opts.duration > 0 ? opts.duration : 5;
-    if (opts.firstFrame) requestBody.first_frame_image = await resolveMediaArg(opts.firstFrame, '首帧图片', apiKey);
-    if (opts.lastFrame) requestBody.last_frame_image = await resolveMediaArg(opts.lastFrame, '尾帧图片', apiKey);
+    if (opts.firstFrame) requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
+    if (opts.lastFrame) requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
     if (opts.images && opts.images.length > 0) {
-      requestBody.image_urls = await Promise.all(opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`, apiKey)));
+      requestBody.image_urls = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
     }
     if (opts.refVideos && opts.refVideos.length > 0) {
-      requestBody.video_urls = await Promise.all(opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`, apiKey)));
+      requestBody.video_urls = opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`));
     }
     if (opts.refAudios && opts.refAudios.length > 0) {
-      requestBody.audio_urls = await Promise.all(opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`, apiKey)));
+      requestBody.audio_urls = opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`));
     }
 
     process.stderr.write(`正在提交 Context-IR 运镜提示词优化任务...\n`);
@@ -741,21 +611,21 @@ async function main() {
       }
     }
 
-    // 挂载参考素材（使用 APIMart 官方规范字段名）
+    // 挂载参考素材（使用标准规范字段名）
     if (opts.firstFrame) {
-      requestBody.first_frame_image = await resolveMediaArg(opts.firstFrame, '首帧图片', apiKey);
+      requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
     }
     if (opts.lastFrame) {
-      requestBody.last_frame_image = await resolveMediaArg(opts.lastFrame, '尾帧图片', apiKey);
+      requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
     }
     if (opts.images && opts.images.length > 0) {
-      requestBody.image_urls = await Promise.all(opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`, apiKey)));
+      requestBody.image_urls = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
     }
     if (opts.refVideos && opts.refVideos.length > 0) {
-      requestBody.video_urls = await Promise.all(opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`, apiKey)));
+      requestBody.video_urls = opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`));
     }
     if (opts.refAudios && opts.refAudios.length > 0) {
-      requestBody.audio_urls = await Promise.all(opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`, apiKey)));
+      requestBody.audio_urls = opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`));
     }
   }
 
