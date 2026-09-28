@@ -71,11 +71,11 @@ node scripts/generate.js \
 ### 2. 首尾帧插值生视频
 
 ```bash
-# 传入可公开访问的 HTTPS 媒体直链（如生图任务生成的临时图片地址或图床链接）
+# 支持直接传入本地文件路径（自动上传并在 24 小时后自动删除）：
 node scripts/generate.js \
   --prompt "A warrior drawing a sword smoothly, cinematic movement" \
-  --first-frame "https://your-domain.com/start.jpg" \
-  --last-frame "https://your-domain.com/end.jpg" \
+  --first-frame "./start.jpg" \
+  --last-frame "./end.jpg" \
   --duration 6 \
   --out ./warrior.mp4
 ```
@@ -127,9 +127,9 @@ node scripts/generate.js \
 | `--resolution`| `2k` (H3) / `768p` (Max) | 分辨率：`2k`, `768p`, `1080p`, `480p`（根据模型支持） |
 | `--duration` | `6` | 视频时长（秒），支持 4-15s（H3-Max 不支持 4s） |
 | `--aspect-ratio`| `16:9` | 画幅比例：`16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9` |
-| `--first-frame`| - | 首帧参考图 URL（支持 `http://`、`https://`、`asset://`，隐私照片严禁上传公网图床） |
-| `--last-frame` | - | 尾帧参考图 URL（支持 `http://`、`https://`、`asset://`，隐私照片严禁上传公网图床） |
-| `--image` | - | 多图参考图片 URL（支持 `http://`、`https://`、`asset://`，可多次传递，最多 9 张） |
+| `--first-frame`| - | 首帧参考图（支持本地图片路径，或 `http://`、`https://`、`asset://` 直链） |
+| `--last-frame` | - | 尾帧参考图（支持本地图片路径，或 `http://`、`https://`、`asset://` 直链） |
+| `--image` | - | 多图参考图片（支持本地图片路径，或 `http://`、`https://`、`asset://` 直链，可多次传递，最多 9 张） |
 | `--ref-video` | - | 参考视频 URL（`MiniMax-H3-Max` 支持，支持 http/https/asset，最多 3 段） |
 | `--source-task-id`| - | 原任务 ID（`MiniMax-H3-Regeneration` 必传） |
 | `--watermark` | `true` | 是否携带水印（1080P 分辨率强制不支持加水印） |
@@ -138,15 +138,20 @@ node scripts/generate.js \
 | `--out` | `./output.mp4` | 输出文件路径 |
 | `--poll-interval`| `5` | 轮询状态间隔秒数 |
 
-### 素材格式与隐私安全规范说明
+### 素材格式与规范说明
 
-- **接口支持协议**：平台接口仅支持 `http://`、`https://` 或 `asset://` 格式的公网媒体链接，不支持直接传入本地文件，**严禁使用 Base64 Data URI**。
-- **⚠️ 核心隐私红线**：
-  - 如果照片涉及个人面孔自拍、隐私生活照、身份证件或商业机密等敏感信息，**【严禁上传到第三方公开公网图床】**！公开图床文件会被搜索引擎爬取索引与公开访问，极易造成个人肖像侵权与隐私泄漏。
-- **推荐安全素材使用方案**：
-  - **方案 1（零隐私风险·AI 对话联动，强烈推荐）**：在 AI 对话流水线中，直接使用上一轮 AI 生图（如 GPT-Image 或平台生图技能）生成的临时公网 `https://` 直链传入 `--first-frame` / `--last-frame` / `--image`，安全且无隐私泄露隐患。
-  - **方案 2（国内可控对象存储，企业/私密素材推荐）**：确需使用本地图片时，推荐上传至您自己账号下的国内云厂商存储（如阿里云 OSS、腾讯云 COS、七牛云等），配置临时安全只读链接传入。
-  - **方案 3（国内合规公共图床，仅限公开素材）**：对于完全不含个人隐私的公开风景图、通用插画素材，方可使用国内合规图床获取直链（**请再次确认：涉密与人脸肖像严禁上传**）。
+- **接口支持协议**：视频生成模型仅接收 `http://`、`https://` 或 `asset://` 格式的媒体直链，**不支持直接传入 Base64 编码（严禁拼接 Data URI）**。
+- **本地图片支持（24 小时自动删除）**：
+  - 本工具支持直接传入本地图片路径（如 `--first-frame ./start.jpg`）。
+  - **自动托管与销毁**：传入本地图片时，系统会自动生成供模型读取的临时访问链接；所有临时素材将在 **24 小时后自动过期并彻底删除**，不占用长期空间，确保素材安全。
+  - **支持格式与大小**：支持 JPG, PNG, WebP, GIF 格式，单张图片不超过 20MB。
+- **配置方式**：
+  - 在 `~/.nange-ai/video-config.json` 中配置您的 API Key 即可使用：
+    ```json
+    {
+      "api_key": "YOUR_API_KEY"
+    }
+    ```
 
 ---
 

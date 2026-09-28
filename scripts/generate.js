@@ -17,6 +17,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 const VIDEO_CONFIG_PATH = path.join(os.homedir(), '.nange-ai', 'video-config.json');
 const COMMON_CONFIG_PATH = path.join(os.homedir(), '.nange-ai', 'config.json');
@@ -137,13 +138,85 @@ function isMediaUrl(val) {
 }
 
 /**
- * 解析并校验媒体参数 (仅支持 http://, https://, asset://)
- * 严格遵照平台接口规范：
- * 1. 仅接收 http://, https://, asset:// 协议的公网链接
- * 2. 严禁使用 Base64 Data URI
- * 3. 不接收本地文件路径（安全防错拦截，并对个人隐私图片提出严禁上传公开图床的警示）
+ * 上传本地图片数据
  */
-function resolveMediaArg(arg, label) {
+function uploadBuffer(uploadUrl, method, customHeaders, fileBuffer) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(uploadUrl);
+    const mod = parsed.protocol === 'https:' ? https : http;
+
+    const reqHeaders = {
+      ...customHeaders,
+      'Content-Length': fileBuffer.length,
+    };
+
+    const req = mod.request(uploadUrl, {
+      method: method || 'PUT',
+      headers: reqHeaders,
+    }, (res) => {
+      let respData = '';
+      res.on('data', (chunk) => { respData += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve();
+        } else {
+          reject(new Error(`上传图片失败 HTTP ${res.statusCode}`));
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      reject(new Error(`网络请求失败: ${err.message}`));
+    });
+
+    req.write(fileBuffer);
+    req.end();
+  });
+}
+
+/**
+ * 上传本地图片并获取 24 小时临时访问链接
+ */
+async function uploadLocalImageViaGateway(filePath, apiKey) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = MIME_TYPES[ext] || 'application/octet-stream';
+  const fileStat = fs.statSync(filePath);
+  const fileSize = fileStat.size;
+
+  process.stderr.write(`[素材处理] 检测到本地图片: ${path.basename(filePath)} (${(fileSize / 1024).toFixed(1)} KB)\n`);
+  process.stderr.write(`[素材处理] 正在上传素材...\n`);
+
+  const credRes = await request(`${BASE_URL}/uploads`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+  }, JSON.stringify({
+    filename: path.basename(filePath),
+    content_type: mime,
+    file_size: fileSize,
+  }));
+
+  const { upload_url, download_url, method = 'PUT', headers = {} } = credRes;
+  if (!upload_url || !download_url) {
+    throw new Error(`获取上传地址失败`);
+  }
+
+  const fileBuffer = fs.readFileSync(filePath);
+  await uploadBuffer(upload_url, method, headers, fileBuffer);
+
+  process.stderr.write(`[素材处理] 上传成功！临时链接有效时长为 24 小时（到期自动删除）\n`);
+  return download_url;
+}
+
+/**
+ * 解析并校验媒体参数
+ * 1. 接收 http://, https://, asset:// 协议的公网链接
+ * 2. 接收本地图片路径（自动上传并获取 24 小时有效临时链接）
+ * 3. 严禁使用 Base64 Data URI
+ */
+async function resolveMediaArg(arg, label, apiKey) {
   if (!arg) return null;
   const trimmed = arg.trim();
 
@@ -162,30 +235,35 @@ function resolveMediaArg(arg, label) {
     return trimmed;
   }
 
-  // 3. 传入了本地文件路径或非 URL 字符串，进行明确拦截与隐私安全指引
+  // 3. 检测是否为本地文件
+  const absPath = path.resolve(trimmed);
+  if (fs.existsSync(absPath)) {
+    const ext = path.extname(absPath).toLowerCase();
+    const isImage = Boolean(MIME_TYPES[ext]);
+
+    if (isImage) {
+      if (!apiKey) {
+        console.error(`[错误] 传入了本地图片，但缺少 API Key 无法上传`);
+        process.exit(1);
+      }
+      try {
+        const publicUrl = await uploadLocalImageViaGateway(absPath, apiKey);
+        return publicUrl;
+      } catch (err) {
+        console.error(`\n[错误] 上传本地图片失败: ${err.message}`);
+        process.exit(1);
+      }
+    }
+  }
+
+  // 4. 传入了无效路径或不支持的文件，进行明确拦截与指引
   console.error(`\n================================================================================`);
-  console.error(`[参数错误] ${label || '素材'}必须提供公网可访问的 URL 链接: ${trimmed}`);
+  console.error(`[参数错误] ${label || '素材'}必须提供有效本地图片路径或公网可访问的 URL: ${trimmed}`);
   console.error(`================================================================================`);
-  console.error(`接口协议说明：`);
-  console.error(`  MiniMax 视频生成接口仅支持以 http://, https:// 或 asset:// 开头的链接，`);
-  console.error(`  不支持直接传递本地文件路径，亦不支持 Base64 数据。`);
-  console.error(``);
-  console.error(`⚠️【重要隐私安全警告】：`);
-  console.error(`  如果您的照片/素材包含个人人脸自拍、家庭生活照、身份证件或商业机密等私密信息，`);
-  console.error(`  【严禁上传到第三方公开公网图床】！公开图床文件会被搜索引擎抓取与公开索引，`);
-  console.error(`  极易造成个人肖像侵权与隐私泄漏。`);
-  console.error(``);
-  console.error(`推荐安全合规使用方案：`);
-  console.error(`• 方案 1 [零隐私风险·AI 对话联动]（强烈推荐）：`);
-  console.error(`    在与 AI 助手的对话流程中，若需要图生视频，可直接调用生图技能（如 GPT-Image`);
-  console.error(`    或平台生图接口），直接使用模型返回的临时公网 https:// 链接传入本工具，`);
-  console.error(`    完全不触碰本地文件与公开图床，安全且无隐私泄露风险。`);
-  console.error(`• 方案 2 [国内可控对象存储]（企业/私有素材推荐）：`);
-  console.error(`    若确需使用本地图片，推荐上传至您自己账号下的国内云厂商存储（如阿里云 OSS、`);
-  console.error(`    腾讯云 COS、七牛云等），配置临时安全只读链接传入。`);
-  console.error(`• 方案 3 [国内合规公共图床]（仅限完全不涉隐私的公开素材）：`);
-  console.error(`    若素材仅为公开的风景摄影、通用插画等【完全不包含任何隐私】的内容，方可`);
-  console.error(`    使用国内合规图床获取直链（请再次确认：涉密与人脸肖像照片严禁使用！）。`);
+  console.error(`使用说明：`);
+  console.error(`  - 支持直接传入本地图片文件（如 --first-frame ./photo.png，自动生成 24h 临时链接并于 24h 后自动删除）`);
+  console.error(`  - 支持以 http://, https:// 或 asset:// 开头的在线媒体链接`);
+  console.error(`  - 不支持 Base64 数据`);
   console.error(`================================================================================\n`);
   process.exit(1);
 }
@@ -410,8 +488,8 @@ MiniMax H3 视频生成与运镜优化工具
 常规提交视频任务:
   node generate.js --prompt "赛博朋克夜景，宇航员漫步在霓虹街道上" --duration 6 --resolution 768p
 
-首尾帧插值生视频:
-  node generate.js --prompt "镜头平滑推移过渡" --first-frame "https://example.com/start.jpg" --last-frame "https://example.com/end.jpg"
+首尾帧插值生视频 (支持直接传入本地图片，或 HTTP/HTTPS 链接):
+  node generate.js --prompt "镜头平滑推移过渡" --first-frame ./start.jpg --last-frame ./end.jpg
 
 智能运镜扩写后生视频:
   node generate.js --prompt "武侠客栈夜雨中的剑客对决" --enhance-prompt --duration 10
@@ -431,9 +509,9 @@ MiniMax H3 视频生成与运镜优化工具
   --resolution <res>       视频分辨率: 2k (默认) | 768p | 1080p | 480p (视模型支持而定)
   --duration <sec>         生成时长: 6s (默认) (H3 支持 4-15s, H3-Max 支持 5-15s 不支持 4s)
   --aspect-ratio <ratio>   画幅比例: 16:9 (默认) | 9:16 | 1:1 | 4:3 | 3:4 | 21:9
-  --first-frame <url>      首帧参考图 (支持 http/https/asset 链接，隐私照片严禁上传公网图床)
-  --last-frame <url>       尾帧参考图 (支持 http/https/asset 链接，隐私照片严禁上传公网图床)
-  --image <url>            多图参考图 URL (支持 http/https/asset 链接，可多次传递，最多 9 张)
+  --first-frame <path/url> 首帧参考图 (支持本地图片路径或 http/https/asset 直链，24h 自动删除)
+  --last-frame <path/url>  尾帧参考图 (支持本地图片路径或 http/https/asset 直链，24h 自动删除)
+  --image <path/url>       多图参考图 (支持本地图片路径或 http/https/asset 直链，可多次传递，最多 9 张)
   --ref-video <url>        参考视频 URL (支持 http/https/asset 链接，最多 3 段)
   --ref-audio <url>        参考音频 URL (支持 http/https/asset 链接，最多 3 段)
   --source-task-id <id>    溯源任务 ID (MiniMax-H3-Regeneration 必传)
@@ -528,16 +606,16 @@ async function main() {
   if (targetModel === MODEL_H3_CONTEXT_IR) {
     requestBody.aspect_ratio = opts.aspectRatio || '16:9';
     requestBody.duration = opts.duration > 0 ? opts.duration : 5;
-    if (opts.firstFrame) requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
-    if (opts.lastFrame) requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
+    if (opts.firstFrame) requestBody.first_frame_image = await resolveMediaArg(opts.firstFrame, '首帧图片', apiKey);
+    if (opts.lastFrame) requestBody.last_frame_image = await resolveMediaArg(opts.lastFrame, '尾帧图片', apiKey);
     if (opts.images && opts.images.length > 0) {
-      requestBody.image_urls = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
+      requestBody.image_urls = await Promise.all(opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`, apiKey)));
     }
     if (opts.refVideos && opts.refVideos.length > 0) {
-      requestBody.video_urls = opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`));
+      requestBody.video_urls = await Promise.all(opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`, apiKey)));
     }
     if (opts.refAudios && opts.refAudios.length > 0) {
-      requestBody.audio_urls = opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`));
+      requestBody.audio_urls = await Promise.all(opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`, apiKey)));
     }
 
     process.stderr.write(`正在提交 Context-IR 运镜提示词优化任务...\n`);
@@ -613,19 +691,19 @@ async function main() {
 
     // 挂载参考素材（使用标准规范字段名）
     if (opts.firstFrame) {
-      requestBody.first_frame_image = resolveMediaArg(opts.firstFrame, '首帧图片');
+      requestBody.first_frame_image = await resolveMediaArg(opts.firstFrame, '首帧图片', apiKey);
     }
     if (opts.lastFrame) {
-      requestBody.last_frame_image = resolveMediaArg(opts.lastFrame, '尾帧图片');
+      requestBody.last_frame_image = await resolveMediaArg(opts.lastFrame, '尾帧图片', apiKey);
     }
     if (opts.images && opts.images.length > 0) {
-      requestBody.image_urls = opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`));
+      requestBody.image_urls = await Promise.all(opts.images.map((img, i) => resolveMediaArg(img, `参考图片 #${i + 1}`, apiKey)));
     }
     if (opts.refVideos && opts.refVideos.length > 0) {
-      requestBody.video_urls = opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`));
+      requestBody.video_urls = await Promise.all(opts.refVideos.map((v, i) => resolveMediaArg(v, `参考视频 #${i + 1}`, apiKey)));
     }
     if (opts.refAudios && opts.refAudios.length > 0) {
-      requestBody.audio_urls = opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`));
+      requestBody.audio_urls = await Promise.all(opts.refAudios.map((a, i) => resolveMediaArg(a, `参考音频 #${i + 1}`, apiKey)));
     }
   }
 

@@ -56,16 +56,15 @@ MiniMax H3 系列模型具备顶级的物理模拟与光影渲染力。为了得
 
 ### 2. 首尾帧与参考素材规范（重要）
 MiniMax 视频生成接口对素材链接有严格的格式要求：
-- **仅支持有效公网链接**：`http://`、`https://` 或 `asset://`。不支持直接传入本地文件。
+- **仅支持有效公网链接**：`http://`、`https://` 或 `asset://`。
 - **严禁 Base64**：接口明确不接收 Base64 Data URI。
-- **⚠️ 隐私安全警示（核心红线）**：
-  - 如果素材包含个人人脸自拍、家庭生活照、身份证件或商业机密等私密照片，**【严禁上传到第三方公开公网图床】**！公开图床文件会被搜索引擎索引与公开抓取，极易导致隐私泄漏。
-- **推荐安全素材使用方案**：
-  - **最佳实践（零隐私风险·AI 对话联动）**：在 AI 对话流水线中，若需图生视频，推荐先调用生图技能（如 GPT-Image 或平台生图服务）生成图片，直接使用模型返回的临时公网 `https://` 链接传入 `--first-frame` / `--last-frame` / `--image`，完全无隐私风险。
-  - **国内可控对象存储（私有素材推荐）**：如需使用本地图片，推荐上传至国内主流云厂商存储（如阿里云 OSS、腾讯云 COS、七牛云等自建私有存储桶），生成带时效签名的安全直链。
-  - **国内合规公共图床（仅限公开素材）**：对于完全不包含任何隐私的公开风景、插画素材，可使用国内合规图床获取公网直链（**涉密与人脸肖像严禁上传**）。
-- **参考视频与音频**：
-  - `--ref-video` 与 `--ref-audio` 仅接受公网可直接访问的 `http://`、`https://` 或 `asset://` 链接。
+- **本地图片支持（24 小时自动删除）**：
+  - 支持直接在命令行传入本地图片路径（如 `--first-frame ./start.jpg`）；
+  - 传入本地图片时，系统会自动生成供模型读取的临时访问链接；
+  - **自动销毁**：上传的临时素材有效期为 **24 小时**，到期后自动失效并彻底删除，不保留长期副本，保障素材安全。
+- **支持格式与限制**：
+  - 图片格式：JPG, PNG, WebP, GIF（单张图片不超过 20MB）；
+  - 参考视频与音频：`--ref-video` 与 `--ref-audio` 仅接受公网可直接访问的 `http://`、`https://` 或 `asset://` 链接。
 
 若用户提供了**起始图**与**结束图**：
 - prompt 重点描述**“从起始状态到终点状态的变化过程与中间动作”**；
@@ -99,11 +98,11 @@ node "$SKILL_DIR/scripts/generate.js" \
   --aspect-ratio 16:9 \
   --out "./cyberpunk.mp4"
 
-# 2. 首尾帧过渡图生视频（仅支持公网 HTTPS 或 asset:// 链接，私密照片严禁上传公网图床）
+# 2. 首尾帧过渡图生视频（支持直接传入本地图片，24 小时后自动删除）
 node "$SKILL_DIR/scripts/generate.js" \
   --prompt "A warrior drawing a glowing sword, transition from resting to battle stance" \
-  --first-frame "https://your-domain.com/start.jpg" \
-  --last-frame "https://your-domain.com/end.jpg" \
+  --first-frame "./start.jpg" \
+  --last-frame "./end.jpg" \
   --duration 6 \
   --out "./sword.mp4"
 
